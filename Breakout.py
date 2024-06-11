@@ -66,7 +66,7 @@ criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(deep_q_net.parameters(),lr=LR)
 
 experiment = Experiment(
-  api_key="JiiK2KSJdvHMEn9eutPUXHHi8",
+  api_key="..",
   project_name="breakout-deep-q-nets",
   workspace="123-code"
 )
