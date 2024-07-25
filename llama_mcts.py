@@ -5,6 +5,24 @@ import math
 import re
 from sympy import symbols,integrate,sin,cos,diff
 
+opciones_solucion = []
+
+def execute_code(code):
+    try:
+        process = subprocess.Popen(['python','-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        stdout,stderr = process.communicate(timeout=10)
+        if process.returncode == 0:
+            return "ran",stdout
+        elif process.returncode == 1:
+            return "error",stdout
+        else:
+            return "output",stdout
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return "timeout",""
+    except Exception as e:
+        return "errors",str(e)
+
 def create_response(user_prompt: str):
     client = Groq(api_key="")
     chat_completion = client.chat.completions.create(
@@ -27,29 +45,31 @@ def create_response(user_prompt: str):
     print(response)
     return response
 
-def rate_answer(question: str, answer: str):
-    prompt = f"""
-    Pregunta: {question}
-    Respuesta: {answer}
-    
-    Eres un experto en diversos temas. Basado en esta pregunta y respuesta, dame una crítica de la respuesta a la pregunta. Solo una crítica, no la respuesta. Luego provee un rating del 1-100 de acuerdo a que tan bien crees que la pregunta fue respondida.
-    La respuesta va en este formato: Critica:<crítica>, Rating:<rating>
-    """
-    critica_y_rating = create_response(prompt)
-    try:
-        match = re.search(r'Rating:\s*(\d+)', critica_y_rating)
-        if match:
-            rating = int(match.group(1))
-            if rating > 95:
-                rating = 95
-            rating = float(rating) / 100
-        else:
-            raise ValueError("Rating not found")
-    except Exception as e:
-        print(f"error: {e}")
-        rating = 0.0
-    print(rating)
-    return rating
+
+def reason_on_response(output_esperado:str,opciones_anteriores:list):
+        client = Groq(api_key="")
+        chat_completion = client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": """
+                Razonas posibles caminos hacia la solucion de cierto problema, te dan una lista de opciones ya enlistadas, y ofreces otras alternativas
+                """
+            },
+            {
+                "role": "user",
+                "content": f"queremos hacer:{output_esperado}, y tenemos por ahora estas ideas:{opciones_anteriores}, por favor sugiereme otra alternativa (unicamente una) para resolver el problema."
+            }
+        ],
+        model="llama3-70b-8192",
+        temperature = 1
+        )
+        response = chat_completion.choices[0].message.content
+        opciones_solucion.append(response)
+        logger.info(f"opcion hacia la solucion: {response}")
+        print(response)
+        return response
+
 
 def get_critique(question: str, answer: str):
     prompt = f"""
@@ -59,6 +79,8 @@ def get_critique(question: str, answer: str):
     Por favor dime cómo mejorarías esta respuesta a la pregunta indicada. Da instrucciones breves y concisas.
     """
     return create_response(prompt)
+
+
 
 def improve_answer(question: str, answer: str):
     critique = get_critique(question, answer)
@@ -75,15 +97,6 @@ def improve_answer(question: str, answer: str):
     """
     return create_response(prompt)
 
-def calculate_answer(eq:str):
-    x = symbols('x')
-    f = eq
-    g = integrate(f, x)    
-    h = diff(g,x)
-    if h == f:
-        return True
-    else:
-        return False
 
 max_children = 5
 
@@ -112,12 +125,25 @@ class Node:
     def add_child(self, child_node):
         self.children.append(child_node)
 
+
+
+
 class MCTS:
-    def __init__(self, question, seed_answers, iterations=5):
+    def __init__(self, question, iterations=5,max_children=5):
         self.question = question
-        self.seed_answers = seed_answers
         self.iterations = iterations
-        self.root = Node(question, seed_answers)
+        self.max_children=max_children
+        self.root = self.create_root_node()
+
+
+    def create_root_node(self):
+        root_node = Node(self.question, "")
+
+        for x in range(self.max_children):
+            solution_option = reason_on_response(self.question,opciones_solucion)
+            child_node = Node(self.question, solution_option, parent=root_node)
+            root_node.add_child(child_node)
+        return root_node
 
     def select(self, node):
         while node.is_fully_expanded() and node.children:
@@ -126,14 +152,16 @@ class MCTS:
 
     def expand(self, node):
         for j in range(max_children - len(node.children)):
-            child_node = Node(self.question, node.answer, parent=node)
-            node.add_child(child_node)
-            critique = get_critique(self.question, child_node.answer)
-            improved = improve_answer(self.question, child_node.answer)
+            child_node = Node(self.question, "", parent=node)
+            improved = improve_answer(self.question, node.answer)
             child_node.answer = improved
+            node.add_child(child_node)
         return random.choice(node.children)
 
     def search(self):
+        best_overall_child = None
+        best_overall_score = float('-inf')
+        
         for x in range(self.iterations):
             node = self.select(self.root)
 
@@ -142,11 +170,22 @@ class MCTS:
 
             reward = self.simulate(node)
             self.backpropagate(node, reward)
-        return self.root.get_best_child().answer
+            best_child = self.root.get_best_child()
+            if best_child.value > best_overall_score:
+                best_overall_score = best_child.value
+                best_overall_child = best_child
+            logger.info(f"Best child answer: {best_child.answer}")
+        return best_overall_child.answer if best_overall_child else self.root.get_best_child().answer
 
     def simulate(self, node):
-        rating = rate_answer(self.question, node.answer)
-        return rating
+        status,output = execute_code(clean_code(node.answer))
+        logger.info(f"Execution status: {status}")
+        logger.info(f"Execution output: {output}")
+        if status == "success":
+            return 0.90
+        else:
+            return  0.01
+
 
     def backpropagate(self, node, reward):
         while node is not None:
@@ -154,10 +193,10 @@ class MCTS:
             node.value += reward
             node = node.parent
 
-question = "Integra la función: f(x) = 2sin(13x) + 4cos(13x)"
-seed_answer = create_response(question)
-mcts = MCTS(question, seed_answer, iterations=5)
-best_answer = mcts.search()
-print(f"best answer: {best_answer}")
 
+
+question = "crea codigo en python, para un bubble sort de una lista de numeros"
+mcts = MCTS(question, iterations=5, max_children=5)
+best_answer = mcts.search()
+logger.info(f"Best answer: {best_answer}")
 
