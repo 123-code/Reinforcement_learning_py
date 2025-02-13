@@ -40,8 +40,9 @@ optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate)
 
 # select action to perform, run the policy network on the state, then get a probability distribution over the actions. finally sample from there
 def select_action(state):
-    state = state[0]  # Extract the state from the tuple returned by env.reset() or env.step()
-    state = torch.tensor(state).float()  # Convert state to a PyTorch tensor
+    state_array = state[0]
+    state = torch.tensor(state_array).float()  # Convert state to a PyTorch tensor
+    state = state.unsqueeze(0) 
     action_probs = policy(state)  # Pass the state through the policy network
     c = torch.distributions.Categorical(probs=action_probs)  
     action = c.sample()
@@ -65,7 +66,7 @@ def update_policy():
 
     rewards = torch.FloatTensor(rewards)
     rewards = (rewards - rewards.mean()) / (rewards.std() + np.finfo(np.float32).eps)
-    loss = torch.sum(torch.mul(policy.policy_history, rewards).mul(-1), -1)
+    loss = -torch.sum(torch.mul(policy.policy_history, rewards)) 
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -84,6 +85,8 @@ def main(episodes):
         for time in range(1000):
             action = select_action(state)
             state, reward, terminated, truncated, info = env.step(action.item()) 
+            state = torch.tensor(state).float().unsqueeze(0)
+         
             done = terminated or truncated
             policy.reward_episode.append(reward)
 
